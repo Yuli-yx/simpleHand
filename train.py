@@ -325,8 +325,8 @@ def main():
             
             
     trainer = Trainer(_CONFIG, args)
-    trainer.train()
-    # trainer.profile()
+    # trainer.train()
+    trainer.profile()
 
 
 

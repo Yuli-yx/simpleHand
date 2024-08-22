@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from torch import Tensor
 from timm.models.layers import DropPath, Mlp
 
-from .position_embedding import build_position_encoding
+from position_embedding import build_position_encoding
 
 
 
@@ -85,7 +85,8 @@ class AttentionBlock(nn.Module):
         drop_path: float = 0.0,
         norm_layer: nn.Module = nn.LayerNorm,
         act_layer: nn.Module = nn.GELU,
-        pre_norm: bool = False
+        pre_norm: bool = False,
+        atten_mask = None
         ) :
         super().__init__()
         
@@ -216,7 +217,156 @@ class LinearUpsample(nn.Module):
         x = x.permute(0, 2, 1) # [N, c_out, j_out] -> [N, j_out, c_out]
         return x
 
+class JointsHead(nn.Module):
+    r"""
+    Same architecture as MeshHead, but with different output dimension, do not output 778 vertices,
+    but 21 joints. 
+    """
+    def __init__(
+        self,
+        in_channels,
+        depths = [1, 1, 1],
+        token_nums = [21, 21, 21],
+        dims = [256, 128, 64],
+        block_types = [AttentionBlock, AttentionBlock, AttentionBlock],
+        first_prenorms = [False, True, True],
+        dropout = 0.1,
+        ):
+        super().__init__()
+        
+        assert len(depths) == len(token_nums)
+        assert len(token_nums) == len(dims)
+        assert len(depths) == 3
+        
+        out_dims = sum(dims)
+        self.joint2d_head = nn.Linear(out_dims, 42)
+        self.joint3d_head = nn.Linear(out_dims, 63)
+        self.joint3d_root = nn.Linear(out_dims, 3)
+        
+        deconv_dim = 256
+        
+        self.in_channels = in_channels
+        self.deconv = self.build_deconv_layer(1, [deconv_dim], [4, 4])
+        
+        self.proj_1 = nn.Linear(deconv_dim, dims[0])
+        # TODO: when training, add attention mask for first attentionn block
+        self.encoder_1 = self.build_encoder(dims[0], block_types[0], depths[0], dropout, first_prenorm=first_prenorms[0])
+        # self.upsample_1 = LinearUpsample(token_nums[0], token_nums[1])
+        
 
+        self.proj_2 = nn.Linear(dims[0], dims[1])
+        self.encoder_2 = self.build_encoder(dims[1], block_types[1], depths[1], dropout, first_prenorm=first_prenorms[1])
+
+        # self.upsample_2 = LinearUpsample(token_nums[1], token_nums[2])
+        
+        self.proj_3 = nn.Linear(dims[1], dims[2])
+        self.encoder_3 = self.build_encoder(dims[2], block_types[2], depths[2], dropout, first_prenorm=first_prenorms[2])
+
+        # self.upsample_3 = LinearUpsample(token_nums[2], 778)               
+        
+               
+        self.pos_embedding_abs = build_position_encoding(hidden_dim=deconv_dim)
+        
+        self.pos_emb_1 = nn.Parameter(torch.zeros(1, token_nums[0], deconv_dim))
+        self.pos_emb_2 = nn.Parameter(torch.zeros(1, token_nums[1], dims[0]))
+        self.pos_emb_3 = nn.Parameter(torch.zeros(1, token_nums[2], dims[1]))
+        
+        nn.init.trunc_normal_(self.pos_emb_1, std=0.02)
+        nn.init.trunc_normal_(self.pos_emb_2, std=0.02)
+        nn.init.trunc_normal_(self.pos_emb_3, std=0.02)
+    
+    def forward(self, feat: Tensor, uv_coords: Tensor) -> Tensor:
+        """
+        args:
+            feat: [N, in_channels, H, W]
+            uv_coords: [N, 21, 2]
+        """
+        feat = self.deconv(feat)
+        
+        # print(feat.shape)
+        
+        b, c, h, w = feat.shape
+        
+        feat_pos = self.pos_embedding_abs(b, h, w, feat.device)
+        
+        feat = feat_pos + feat
+
+        uv_coords = uv_coords.reshape(-1, 21, 2)
+        N, J, _ = uv_coords.shape
+        select_feat = remap_uv(feat, uv_coords)  # [N, 21, latent_channels]
+        token_features = select_feat.reshape(N, J, -1)
+
+        token_features += self.pos_emb_1
+        token_features = self.proj_1(token_features)
+        token_features = self.encoder_1(token_features)
+        feat1 = torch.clone(token_features)
+        # token_features = self.upsample_1(token_features)
+        
+        token_features += self.pos_emb_2
+        token_features = self.proj_2(token_features)        
+        token_features = self.encoder_2(token_features)
+        feat2 = torch.clone(token_features)
+        # token_features = self.upsample_2(token_features)
+        
+        token_features += self.pos_emb_3
+        token_features = self.proj_3(token_features)                
+        token_features = self.encoder_3(token_features)
+        feat3 = torch.clone(token_features)
+        # token_features = self.upsample_3(token_features)    
+
+        cat_feat = torch.cat([feat1, feat2, feat3], dim=2)
+
+        results = {}
+        results['joints_2d'] = self.joint2d_head(cat_feat)
+        results['joints_3d'] = self.joint3d_head(cat_feat)
+        results['joint_root'] = self.joint3d_root(cat_feat)
+        
+        # vertices = self.pred_final(token_features)
+
+        return results
+        
+    def build_encoder(self, dim, block_layer, depth=1, dropout=0.1, first_prenorm=True):
+        blocks = []
+        for i in range(depth):
+            if i == 0:
+                first_prenorm = first_prenorm
+            else:
+                first_prenorm = True
+            block = block_layer(dim, dim, drop_path=dropout, dropout=dropout, pre_norm=first_prenorm)
+            blocks.append(block)
+        return nn.Sequential(*blocks)
+    
+    def _get_deconv_cfg(self, deconv_kernel):       
+        """Get configurations for deconv layers."""
+        if deconv_kernel == 4:
+            padding = 0
+            output_padding = 0
+        elif deconv_kernel == 3:
+            padding = 1
+            output_padding = 1
+        elif deconv_kernel == 2:
+            padding = 0
+            output_padding = 0
+        else:
+            raise ValueError(f'Not supported num_kernels ({deconv_kernel}).')
+        return deconv_kernel, padding, output_padding
+        
+
+    def build_deconv_layer(self, num_layers, num_filters, num_kernels):
+        layers = []
+        for i in range(num_layers):
+            kernel, padding, output_padding = \
+                self._get_deconv_cfg(num_kernels[i])
+
+            planes = num_filters[i]
+            decov = nn.ConvTranspose2d(in_channels=self.in_channels, out_channels=planes, kernel_size=kernel, stride=4, padding=padding, output_padding=output_padding, bias=False)
+            layers.append(decov)
+            layers.append(nn.BatchNorm2d(planes))
+            layers.append(nn.ReLU(inplace=True))
+            self.in_channels = planes
+
+        return nn.Sequential(*layers)
+        
 class MeshHead(nn.Module):
     def __init__(
         self, 
@@ -351,3 +501,22 @@ class MeshHead(nn.Module):
         vertices = self.pred_final(token_features)
 
         return vertices
+
+
+if __name__ == "__main__":
+    print("model loading")
+    joint2_head = JointsHead(
+        in_channels=256,
+        depths=[1, 1, 1],
+        token_nums=[21, 21, 21],
+        dims=[256, 128, 64],
+        block_types=[AttentionBlock, AttentionBlock, AttentionBlock],
+        first_prenorms=[False, True, True],
+        dropout=0.1,
+    )
+    print("model loaded")
+    feat = torch.randn(1, 256, 56, 56)
+    uv_coords = torch.randn(1, 21, 2)
+    print(feat.shape)
+    
+    results = joint2_head(feat, uv_coords)

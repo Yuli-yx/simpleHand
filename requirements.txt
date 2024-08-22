@@ -9,6 +9,6 @@ opencv_python_headless==4.8.1.78
 pynvml==11.5.0
 pytorch_memlab==0.3.0
 timm==0.9.12
-torch==2.1.2
-torchvision==0.16.2
+# torch==2.1.2
+# torchvision==0.16.2
 tqdm==4.65.0
