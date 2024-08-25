@@ -7,7 +7,7 @@ import timm
 from timm.models.layers import DropPath, Mlp
 import hiera
 
-from models.modules import MeshHead, AttentionBlock, IdentityBlock, SepConvBlock
+from models.modules import MeshHead, JointsHead, AttentionBlock, IdentityBlock, SepConvBlock
 from models.losses import mesh_to_joints
 from models.losses import l1_loss
 
@@ -39,22 +39,43 @@ class HandNet(nn.Module):
         self.keypoints_2d_head = nn.Linear(uv_cfg['in_features'], uv_cfg['out_features'])
         # self.depth_head = nn.Linear(depth_cfg['in_features'], depth_cfg['out_features'])
         
-        mesh_head_cfg = model_cfg["MESH_HEAD"].copy()
+        self.use_joint_head = False
+        if "MESH_HEAD" in model_cfg.keys():
+            
+            mesh_head_cfg = model_cfg["MESH_HEAD"].copy()
+            
+            block_types_name = mesh_head_cfg['block_types']
+            block_types = []
+            block_map = {
+                "attention": AttentionBlock,
+                "identity": IdentityBlock,
+                "conv": SepConvBlock,
+            }
+            
+            for name in block_types_name:
+                block_types.append(block_map[name])
+            mesh_head_cfg['block_types'] = block_types
         
-        block_types_name = mesh_head_cfg['block_types']
-        block_types = []
-        block_map = {
-            "attention": AttentionBlock,
-            "identity": IdentityBlock,
-            "conv": SepConvBlock,
-        }
+            self.mesh_head = MeshHead(**mesh_head_cfg)   
+        elif "JOINTS_HEAD" in model_cfg.keys():
+            self.use_joint_head = True
+            joints_head_cfg = model_cfg["JOINTS_HEAD"].copy()
+            
+            block_types_name = joints_head_cfg['block_types']
+            block_types = []
+            block_map = {
+                "attention": AttentionBlock,
+                "identity": IdentityBlock,
+                "conv": SepConvBlock,
+            }
+            
+            for name in block_types_name:
+                block_types.append(block_map[name])
+            joints_head_cfg['block_types'] = block_types
         
-        for name in block_types_name:
-            block_types.append(block_map[name])
-        mesh_head_cfg['block_types'] = block_types
-        
-        self.mesh_head = MeshHead(**mesh_head_cfg)        
-        
+            self.mesh_head = JointsHead(**joints_head_cfg)
+        else:
+            raise ValueError("No head is defined")
 
 
     def infer(self, image):
@@ -69,15 +90,26 @@ class HandNet(nn.Module):
         uv = self.keypoints_2d_head(global_feature)     
         # depth = self.depth_head(global_feature)
         
-        vertices = self.mesh_head(features, uv)
-        joints = mesh_to_joints(vertices)
+        
+        
+        if self.use_joint_head:
+            joints = self.mesh_head(features, uv)
+            return {
+                "uv": uv,
+                # "root_depth": depth,
+                "joints": joints,
+                # "vertices": vertices,            
+            }
+        else:
+            vertices = self.mesh_head(features, uv)
+            joints = mesh_to_joints(vertices)
 
-        return {
-            "uv": uv,
-            # "root_depth": depth,
-            "joints": joints,
-            "vertices": vertices,            
-        }
+            return {
+                "uv": uv,
+                # "root_depth": depth,
+                "joints": joints,
+                "vertices": vertices,            
+            }
 
 
     def forward(self, image, target=None):
@@ -101,13 +133,13 @@ class HandNet(nn.Module):
         output_dict = self.infer(image)
         if self.training:
             assert target is not None
-            loss_dict = self._cal_single_hand_losses(output_dict, target)
+            loss_dict = self._cal_single_hand_losses(output_dict, target, use_verticesloss=(self.use_joint_head==False))
             return loss_dict
 
         return output_dict
 
 
-    def _cal_single_hand_losses(self, pred_hand_dict, gt_hand_dict):
+    def _cal_single_hand_losses(self, pred_hand_dict, gt_hand_dict, use_verticesloss=True):
         """get training loss
 
         Args:
@@ -130,8 +162,9 @@ class HandNet(nn.Module):
         """
         uv_pred = pred_hand_dict['uv']
         # root_depth_pred = pred_hand_dict['root_depth']
-        joints_pred = pred_hand_dict["joints"]
-        vertices_pred = pred_hand_dict['vertices']
+        joints_pred = pred_hand_dict["joints"]['joints_3d']
+        if use_verticesloss:
+            vertices_pred = pred_hand_dict['vertices']
 
 
         uv_pred = uv_pred.reshape(-1, 21, 2).contiguous()
@@ -143,11 +176,13 @@ class HandNet(nn.Module):
         # root_depth_gt = gt_hand_dict['gamma'].reshape(-1, 1).contiguous()
         hand_uv_valid = gt_hand_dict['uv_valid']
         hand_xyz_valid = gt_hand_dict['xyz_valid'] # N, 1
-        vertices_gt = gt_hand_dict['vertices']
+        if use_verticesloss:
+            vertices_gt = gt_hand_dict['vertices']
 
         uv_loss = l1_loss(uv_pred, uv_gt, hand_uv_valid)
         joints_loss = l1_loss(joints_pred, joints_gt, valid=hand_xyz_valid)
-        vertices_loss = l1_loss(vertices_pred, vertices_gt, valid=hand_xyz_valid)
+        if use_verticesloss:
+            vertices_loss = l1_loss(vertices_pred, vertices_gt, valid=hand_xyz_valid)
 
 
         # root_depth_loss = (torch.abs(root_depth_pred- root_depth_gt)).mean()
@@ -158,7 +193,7 @@ class HandNet(nn.Module):
             "uv_loss": uv_loss * self.loss_cfg["UV_LOSS_WEIGHT"],
             "joints_loss": joints_loss * self.loss_cfg["JOINTS_LOSS_WEIGHT"],
             # "root_depth_loss": root_depth_loss * self.loss_cfg["DEPTH_LOSS_WEIGHT"],
-            "vertices_loss": vertices_loss * self.loss_cfg["VERTICES_LOSS_WEIGHT"],            
+            "vertices_loss": vertices_loss * self.loss_cfg["VERTICES_LOSS_WEIGHT"] if use_verticesloss else 0,            
         }
 
         total_loss = 0
@@ -173,7 +208,8 @@ class HandNet(nn.Module):
 if __name__ == "__main__":
     import pickle
     import numpy as np
-    from cfg import _CONFIG
+    # from cfg import _CONFIG
+    from cfg_jointshead import _CONFIG
 
 
 
@@ -191,21 +227,32 @@ if __name__ == "__main__":
     # print(out.shape)
 
     net = HandNet(_CONFIG)
-    print(net)
+    # net.eval()
+    # print(net)
 
     print("get losses")
+    target = {
+        'uv': torch.rand(1, 21, 2),
+        'xyz': torch.rand(1, 21, 3),
+        'gamma': torch.rand(1, 1),
+        'uv_valid': torch.rand(1, 21),
+        'xyz_valid': torch.rand(1, 21),
+    }
+    loss = net(x, target)
 
+    
+    
 
-    path = 'batch_data.pkl'
-    with open(path, 'rb') as f:
-        batch_data = pickle.load(f)
-        for k in batch_data:
-            batch_data[k] = Tensor(batch_data[k]).float()
-            print(k, batch_data[k].shape, batch_data[k].max(), batch_data[k].min())
+    # path = 'batch_data.pkl'
+    # with open(path, 'rb') as f:
+    #     batch_data = pickle.load(f)
+    #     for k in batch_data:
+    #         batch_data[k] = Tensor(batch_data[k]).float()
+    #         print(k, batch_data[k].shape, batch_data[k].max(), batch_data[k].min())
 
-    losses_dict = net(batch_data['img'],batch_data)
-    for key in losses_dict:
-        print(key, losses_dict[key].item())
+    # losses_dict = net(batch_data['img'],batch_data)
+    # for key in losses_dict:
+    #     print(key, losses_dict[key].item())
 
 
     # loss = losses_dict['total_loss']

@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from torch import Tensor
 from timm.models.layers import DropPath, Mlp
 
-from position_embedding import build_position_encoding
+from .position_embedding import build_position_encoding
 
 
 
@@ -239,9 +239,9 @@ class JointsHead(nn.Module):
         assert len(depths) == 3
         
         out_dims = sum(dims)
-        self.joint2d_head = nn.Linear(out_dims, 42)
+        # self.joint2d_head = nn.Linear(out_dims, 42)
         self.joint3d_head = nn.Linear(out_dims, 63)
-        self.joint3d_root = nn.Linear(out_dims, 3)
+        # self.joint3d_root = nn.Linear(out_dims, 3)
         
         deconv_dim = 256
         
@@ -317,9 +317,9 @@ class JointsHead(nn.Module):
         cat_feat = torch.cat([feat1, feat2, feat3], dim=2)
 
         results = {}
-        results['joints_2d'] = self.joint2d_head(cat_feat)
+        # results['joints_2d'] = self.joint2d_head(cat_feat)
         results['joints_3d'] = self.joint3d_head(cat_feat)
-        results['joint_root'] = self.joint3d_root(cat_feat)
+        # results['joint_root'] = self.joint3d_root(cat_feat)
         
         # vertices = self.pred_final(token_features)
 
