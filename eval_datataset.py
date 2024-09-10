@@ -106,3 +106,11 @@ class HandMeshEvalDataset(Dataset):
         
     def __str__(self):
         return json.dumps(len(self.all_image_info))
+
+
+if __name__ == "__main__":
+    dataset = HandMeshEvalDataset("dataset/eval.json")
+    dataloader = DataLoader(dataset, batch_size=1, sampler=SequentialSampler(dataset), num_workers=0)
+    for data in tqdm(dataloader):
+        pass
+    print("done")

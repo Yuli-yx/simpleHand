@@ -162,15 +162,16 @@ class HandNet(nn.Module):
         """
         uv_pred = pred_hand_dict['uv']
         # root_depth_pred = pred_hand_dict['root_depth']
+        # print(pred_hand_dict)
         joints_pred = pred_hand_dict["joints"]['joints_3d']
         if use_verticesloss:
             vertices_pred = pred_hand_dict['vertices']
 
 
         uv_pred = uv_pred.reshape(-1, 21, 2).contiguous()
+        
         joints_pred = joints_pred.reshape(-1, 21, 3).contiguous()
         # root_depth_pred = root_depth_pred.reshape(-1, 1).contiguous()
-
         uv_gt = gt_hand_dict['uv']
         joints_gt = gt_hand_dict['xyz']
         # root_depth_gt = gt_hand_dict['gamma'].reshape(-1, 1).contiguous()
@@ -193,8 +194,10 @@ class HandNet(nn.Module):
             "uv_loss": uv_loss * self.loss_cfg["UV_LOSS_WEIGHT"],
             "joints_loss": joints_loss * self.loss_cfg["JOINTS_LOSS_WEIGHT"],
             # "root_depth_loss": root_depth_loss * self.loss_cfg["DEPTH_LOSS_WEIGHT"],
-            "vertices_loss": vertices_loss * self.loss_cfg["VERTICES_LOSS_WEIGHT"] if use_verticesloss else 0,            
+                        
         }
+        if use_verticesloss:
+            loss_dict["vertices_loss"] = vertices_loss * self.loss_cfg["VERTICES_LOSS_WEIGHT"]
 
         total_loss = 0
         for k in loss_dict:
@@ -215,7 +218,7 @@ if __name__ == "__main__":
 
 
     print('test forward')
-    x = np.random.uniform(0, 255, (1, 3, 224, 224)).astype(np.float32)
+    x = np.random.uniform(0, 255, (4, 3, 224, 224)).astype(np.float32)
     x = Tensor(x)
 
     print(x.shape)
@@ -232,13 +235,17 @@ if __name__ == "__main__":
 
     print("get losses")
     target = {
-        'uv': torch.rand(1, 21, 2),
-        'xyz': torch.rand(1, 21, 3),
-        'gamma': torch.rand(1, 1),
-        'uv_valid': torch.rand(1, 21),
-        'xyz_valid': torch.rand(1, 21),
+        'uv': torch.rand(4, 21, 2).cuda(),
+        'xyz': torch.rand(4, 21, 3).cuda(),
+        'gamma': torch.rand(4, 1).cuda(), 
+        'uv_valid': torch.rand(4, 21).cuda(),
+        'xyz_valid': torch.rand(4, 1).cuda(),
     }
+    net.cuda()
+    x = x.cuda()
+    # target = {k: v.cuda() for k, v in target.items()}
     loss = net(x, target)
+    print(loss)
 
     
     

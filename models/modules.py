@@ -231,6 +231,7 @@ class JointsHead(nn.Module):
         block_types = [AttentionBlock, AttentionBlock, AttentionBlock],
         first_prenorms = [False, True, True],
         dropout = 0.1,
+        mlp_dims = [128, 64, 3],
         ):
         super().__init__()
         
@@ -238,10 +239,14 @@ class JointsHead(nn.Module):
         assert len(token_nums) == len(dims)
         assert len(depths) == 3
         
-        out_dims = sum(dims)
-        # self.joint2d_head = nn.Linear(out_dims, 42)
-        self.joint3d_head = nn.Linear(out_dims, 63)
-        # self.joint3d_root = nn.Linear(out_dims, 3)
+        
+
+        # self.joint3d_head = nn.Sequential(nn.Linear(out_dims, mlp_dims[0]), 
+        #                                   nn.ReLU(inplace=True),
+        #                                   nn.Linear(mlp_dims[0], mlp_dims[1]),
+        #                                   nn.ReLU(inplace=True), 
+        #                                   nn.Linear(mlp_dims[1], mlp_dims[2]))
+        # initialize mlp layers with params in mlp_dims, for hiddenlayer use relu, dont use activate at output layer
         
         deconv_dim = 256
         
@@ -262,7 +267,17 @@ class JointsHead(nn.Module):
         self.proj_3 = nn.Linear(dims[1], dims[2])
         self.encoder_3 = self.build_encoder(dims[2], block_types[2], depths[2], dropout, first_prenorm=first_prenorms[2])
 
-        # self.upsample_3 = LinearUpsample(token_nums[2], 778)               
+        # self.upsample_3 = LinearUpsample(token_nums[2], 778)      
+        
+        mlp_layers = []
+        out_dims = sum(dims)
+        mlp_layers.append(nn.Linear(out_dims, mlp_dims[0]))
+        mlp_layers.append(nn.ReLU(inplace=True))
+        for (in_dim, out_dim) in zip(mlp_dims[:-1], mlp_dims[1:]):
+            mlp_layers.append(nn.Linear(in_dim, out_dim))
+            mlp_layers.append(nn.ReLU(inplace=True))
+        mlp_layers.pop()
+        self.joint3d_head = nn.Sequential(*mlp_layers)         
         
                
         self.pos_embedding_abs = build_position_encoding(hidden_dim=deconv_dim)

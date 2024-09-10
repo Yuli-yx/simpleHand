@@ -1,8 +1,8 @@
 _CONFIG = dict(
-    NAME="fastvit_ma36",
+    NAME="HandNet_joints_head_w_depth",
     TAG="fastvit_ma36 deconv4 one conv k44",
     MODEL=dict(
-        NAME="HandNet",
+        NAME="HandNet_JointsHead",
         BACKBONE=dict(
             model_name="fastvit_ma36",
             pretrain=True,
@@ -37,6 +37,7 @@ _CONFIG = dict(
             first_prenorms = [True, True, True],
             block_types = ["attention", "attention", "attention"], # attention, identity, conv
             # block_types = ["identity", "identity", "identity"], # attention, identity, conv
+            mlp_dims = [128, 64, 3],
             
         ),
         LOSSES=dict(
@@ -76,7 +77,8 @@ _CONFIG = dict(
         DATALOADER=dict(
             MINIBATCH_SIZE_PER_DIVICE=128,
             MINIBATCH_PER_EPOCH=256,
-            NAME="train"
+            NAME="train",
+            NUM_WORKERS=4,
         ),
 				
         WEIGHT_DECAY=1e-2,

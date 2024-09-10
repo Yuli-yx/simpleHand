@@ -17,7 +17,7 @@ import warnings
 warnings.filterwarnings("ignore", category=ResourceWarning)
 
 from hand_net import HandNet
-from cfg import _CONFIG
+from cfg_jointshead import _CONFIG
 from dataset import build_train_loader
 from utils import GPUMemoryMonitor, get_log_model_dir
 
@@ -129,7 +129,8 @@ class Trainer:
             model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank],
                                                             broadcast_buffers=True, find_unused_parameters=True)
 
-        self.train_loader = build_train_loader(self.cfg["TRAIN"]["DATALOADER"]["MINIBATCH_SIZE_PER_DIVICE"])
+        self.train_loader = build_train_loader(self.cfg["TRAIN"]["DATALOADER"]["MINIBATCH_SIZE_PER_DIVICE"],
+                                               self.cfg["TRAIN"]["DATALOADER"]["NUM_WORKERS"])
         self.max_iter = self.cfg["TRAIN"]["DATALOADER"]["MINIBATCH_PER_EPOCH"]
         
         self.gpu_monitor = GPUMemoryMonitor()
@@ -325,8 +326,8 @@ def main():
             
             
     trainer = Trainer(_CONFIG, args)
-    # trainer.train()
-    trainer.profile()
+    trainer.train()
+    # trainer.profile()
 
 
 

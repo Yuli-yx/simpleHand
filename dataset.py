@@ -7,7 +7,7 @@ from tqdm import tqdm
 import albumentations as A
 from typing import List, Dict
 from itertools import cycle
-from cfg import _CONFIG
+from cfg_jointshead import _CONFIG
 from torch.utils.data import Dataset, DataLoader, RandomSampler
 from transforms import GetRandomScaleRotation, MeshAffine, RandomHorizontalFlip, \
             get_points_center_scale, RandomChannelNoise, BBoxCenterJitter, MeshPerspectiveTransform
@@ -158,10 +158,12 @@ class HandDataset(Dataset):
 
         return data
 
-def build_train_loader(batch_size):
+
+
+def build_train_loader(batch_size, num_workers):
 	dataset = HandDataset(all_info)
 	sampler = RandomSampler(dataset, replacement=True)
-	dataloader = (DataLoader(dataset, batch_size=batch_size, sampler=sampler))
+	dataloader = (DataLoader(dataset, batch_size=batch_size, sampler=sampler, num_workers=num_workers))
 	return iter(dataloader)
 
 # if __name__ == "__main__":
