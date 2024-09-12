@@ -1,10 +1,22 @@
 import os
 import numpy as np
 from PIL import Image
+import cv2
 from torch.utils.data import Dataset
+import albumentations as A
 from collections import defaultdict
 from tqdm import tqdm
-
+from cfg_jointshead import _CONFIG
+from typing import List, Dict
+from transforms import GetRandomScaleRotation, MeshAffine, RandomHorizontalFlip, \
+            get_points_center_scale, RandomChannelNoise, BBoxCenterJitter, MeshPerspectiveTransform
+from kp_preprocess import get_2d3d_perspective_transform
+            
+DATA_CFG = _CONFIG["DATA"]
+IMAGE_SHAPE: List = DATA_CFG["IMAGE_SHAPE"][:2]
+NORMALIZE_3D_GT = DATA_CFG['NORMALIZE_3D_GT']
+AUG_CFG: Dict = DATA_CFG["AUG"]
+ROOT_INDEX = DATA_CFG['ROOT_INDEX']
 class SimplifiedFHBHandsDataset(Dataset):
     def __init__(self, dataset_folder, split='train', input_res=(1920, 1080)):
         self.input_res = input_res
@@ -29,10 +41,20 @@ class SimplifiedFHBHandsDataset(Dataset):
         self.joints2d = []
         self.joints3d = []
         self.image_names = []
-
+        self.init_aug_funcs()
         # 加载关节信息
         self.load_dataset(dataset_folder)
+        
 
+    def init_aug_funcs(self):
+        self.random_channel_noise = RandomChannelNoise(**AUG_CFG['RandomChannelNoise'])
+        self.random_bright = A.RandomBrightnessContrast(**AUG_CFG["RandomBrightnessContrastMap"])            
+        self.random_flip = RandomHorizontalFlip(**AUG_CFG["RandomHorizontalFlip"])
+        self.bbox_center_jitter = BBoxCenterJitter(**AUG_CFG["BBoxCenterJitter"])
+        self.get_random_scale_rotation = GetRandomScaleRotation(**AUG_CFG["GetRandomScaleRotation"])
+        self.mesh_affine = MeshAffine(IMAGE_SHAPE[0])
+        self.mesh_perspective_trans = MeshPerspectiveTransform(IMAGE_SHAPE[0])
+        self.root_index = ROOT_INDEX
     def load_dataset(self, dataset_folder):
         """加载图片路径和关节点信息"""
         skeleton_root = os.path.join(dataset_folder, "Hand_pose_annotation_v1")
@@ -136,7 +158,7 @@ class SimplifiedFHBHandsDataset(Dataset):
     def get_image(self, idx):
         """获取图像"""
         img_path = os.path.join(self.image_names[idx])
-        img = Image.open(img_path).convert("RGB")
+        img = cv2.imread(img_path)
         return img
 
     def get_joints3d(self, idx):
@@ -163,14 +185,95 @@ class SimplifiedFHBHandsDataset(Dataset):
         joints2d = self.get_joints2d(idx)
         joints25d = self.get_joints25d(idx)
 
-        sample = {
-            'image': img,
-            'joints2d': joints2d,
-            'joints3d': joints3d,
-            'joints25d': joints25d
+        K = self.cam_intr
+        
+        h, w = img.shape[:2]
+        uv_norm = joints2d.copy()
+        uv_norm[:, 0] /= w
+        uv_norm[:, 1] /= h
+        
+        coor_valid = (uv_norm > 0).astype(np.float32) * (uv_norm < 1).astype(np.float32)
+        coor_valid = coor_valid[:, 0] * coor_valid[:, 1]
+        
+        valid_points = [joints2d[i] for i in range(len(joints2d)) if coor_valid[i] == 1]
+        
+        points = np.array(valid_points)
+        min_coord = points.min(axis=0)
+        max_coord = points.max(axis=0)
+        center = (max_coord + min_coord) / 2
+        scale = max_coord - min_coord
+        
+                
+        results = {
+            "img": img, 
+            "keypoints2d": joints2d,
+            "keypoints3d": joints3d,
+            "keypoints25d": joints25d,
+            "center": center,
+            "scale": scale,
+            "K": K
         }
-        return sample
+        
+        if self.split == "train":
+            results = self.bbox_center_jitter(results)
+            results = self.get_random_scale_rotation(results)
+            results = self.mesh_perspective_trans(results)
+            
+            use_relative = False
+            root_point = results['keypoints3d'][self.root_index].copy()
+            if use_relative:                
+                results['keypoints3d'] = results['keypoints3d'] - root_point[None, :]
+                results['vertices'] = results['vertices'] - root_point[None, :]
+            hand_img_len = img.shape[0]
+            root_depth = root_point[2]
+            
+            hand_world_len = 0.2
+            fx = results['K'][0][0]
+            fy = results['K'][1][1]
+            camare_relative_k = np.sqrt(fx * fy * (hand_world_len**2) / (hand_img_len**2))
+            gamma = root_depth / camare_relative_k
+            
+            results = self.random_flip(results)
+            
+            results = self.random_channel_noise(results)
+            results['img'] = self.random_bright(image=results['img'])['image']
+            
+            trans_uv = results["keypoints2d"]
+            trans_uv[:, 0] /= IMAGE_SHAPE[0]
+            trans_uv[:, 1] /= IMAGE_SHAPE[1]
+            
+            trans_coord_valid = (trans_uv > 0).astype(np.float32) * (trans_uv < 1).astype(np.float32)
+            trans_coord_valid = trans_coord_valid[:, 0] * trans_coord_valid[:, 1]
+            trans_coord_valid *= coor_valid
+            
+            xyz = results["keypoints3d"]
+            if NORMALIZE_3D_GT:
+                joints_bone_len = np.sqrt(((xyz[0:1] - xyz[9:10])**2).sum(axis=-1, keepdims=True) + 1e-8)
+                xyz = xyz  / joints_bone_len
+            
+            xyz_valid = 1
 
+            if trans_coord_valid[9] == 0 and trans_coord_valid[0] == 0:
+                xyz_valid = 0
+
+            img = results['img']
+            img = np.transpose(img, (2, 0, 1))
+            data = {
+                "img": img,
+                "uv": results["keypoints2d"],
+                "xyz": xyz,
+                "joints25d": results["keypoints25d"],             
+                "uv_valid": trans_coord_valid,
+                "gamma": gamma,
+                "xyz_valid": xyz_valid,
+            }
+
+          
+        elif self.split == "test":
+            data = results
+        
+        return data
+    
     def __len__(self):
         return len(self.image_names)
     

@@ -311,6 +311,9 @@ class RandomHorizontalFlip(object):
             keypoints3d = results['keypoints3d'].copy()
             keypoints3d = _flip_keypoints(keypoints3d)
             results['keypoints3d'] = keypoints3d
+        
+        if 'keypoints25d' in results:
+            results['keypoints25d'] = np.concatenate([keypoints2d, keypoints3d[:, 2:]], axis=1)
 
         if "vertices" in results:
             vertices = results['vertices'].copy()
@@ -575,6 +578,10 @@ class MeshPerspectiveTransform(object):
         results['img'] = warp_img
         results["K"] = new_K
 
+        if "keypoints25d" in results:
+            results['keypoints25d'] = np.concatenate([new_uv, new_xyz[:, 2:]], axis=1)
+            
+            
         if "vertices" in results:
             vertices = results['vertices'].copy()
             vertices = trans_matrix_3d.dot(vertices.T).T
