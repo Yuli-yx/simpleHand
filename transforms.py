@@ -3,10 +3,10 @@
 import math
 import cv2
 import numpy as np
-
+from loguru import logger 
 
 def get_points_center_scale(points):
-    # points must be NxC
+    # points must be NxC, ensure bbox is inside the image
     points = np.array(points)
     min_coord = points.min(axis=0)
     max_coord = points.max(axis=0)

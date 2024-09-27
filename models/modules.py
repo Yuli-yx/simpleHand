@@ -331,9 +331,10 @@ class JointsHead(nn.Module):
 
         cat_feat = torch.cat([feat1, feat2, feat3], dim=2)
 
-        results = {}
+        
         # results['joints_2d'] = self.joint2d_head(cat_feat)
-        results['joints_3d'] = self.joint3d_head(cat_feat)
+        results = self.joint3d_head(cat_feat)
+        results = results.reshape(-1, 21, 3)
         # results['joint_root'] = self.joint3d_root(cat_feat)
         
         # vertices = self.pred_final(token_features)

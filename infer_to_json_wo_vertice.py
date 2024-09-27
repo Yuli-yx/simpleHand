@@ -10,7 +10,8 @@ from torch.utils.data import DataLoader, SequentialSampler
 
 from cfg_jointshead import _CONFIG
 from hand_net import HandNet
-from eval_datataset import HandMeshEvalDataset
+# from eval_datataset import HandMeshEvalDataset
+from datasets import SimplifiedFHBHandsDataset
 from utils import get_log_model_dir
 
 from scipy.linalg import orthogonal_procrustes
@@ -171,7 +172,7 @@ def align_w_scale(mtx1, mtx2, return_trafo=False):
         return mtx2_t
 
 def infer_single_json(val_cfg, bmk, model, rot_angle=0):
-    dataset = HandMeshEvalDataset(bmk["json_dir"], val_cfg["IMAGE_SHAPE"], bmk["scale_enlarge"], rot_angle=rot_angle)
+    dataset = SimplifiedFHBHandsDataset(dataset_folder="/media/mldadmin/home/s123mdg31_07/Datasets/FPHAB", split='test')
     sampler = SequentialSampler(dataset)
     dataloader = DataLoader(dataset, sampler=sampler, batch_size=val_cfg["BATCH_SIZE"], num_workers=4, timeout=60)
         
@@ -206,7 +207,7 @@ def infer_single_json(val_cfg, bmk, model, rot_angle=0):
         
         with torch.no_grad():
             res = model(image)
-            joints = res["joints"]['joints_3d']
+            joints = res["joints"]
             uv = res["uv"]
             # vertices = res['vertices']
             gt_uv = batch_data
@@ -220,7 +221,7 @@ def infer_single_json(val_cfg, bmk, model, rot_angle=0):
         joints = joints - joints_root
         # vertices = vertices - joints_root
                 
-        joints = (trans_matrix_3d_inv @ torch.transpose(joints, 1, 2)).transpose(1, 2) 
+        # joints = (trans_matrix_3d_inv @ torch.transpose(joints, 1, 2)).transpose(1, 2) 
         # vertices = (trans_matrix_3d_inv @ torch.transpose(vertices, 1, 2)).transpose(1, 2) 
         
         b, j = uv.shape[:2]
@@ -261,18 +262,19 @@ def main(epoch, tta=False, postfix=""):
     
     bmk = val_cfg['BMK']
     
-    dataset = HandMeshEvalDataset(bmk["json_dir"], val_cfg["IMAGE_SHAPE"], bmk["scale_enlarge"])
+    # dataset = HandMeshEvalDataset(bmk["json_dir"], val_cfg["IMAGE_SHAPE"], bmk["scale_enlarge"])
+    dataset = SimplifiedFHBHandsDataset(dataset_folder="/media/mldadmin/home/s123mdg31_07/Datasets/FPHAB", split='test')
 
     pred_uv_list, xyz_pred_list, xyz_gt_list = infer_single_json(val_cfg, bmk, model, rot_angle=0)
 
     result_json_path = os.path.join(log_model_dir, "evals", bmk['name'], f"{epoch}{postfix}.json")
     
-    for pred_uv, pred_xyz, gt_joints, ori_info in zip(pred_uv_list, xyz_pred_list, xyz_gt_list, dataset.all_info):
-        ori_info['pred_uv'] = pred_uv
-        ori_info['pred_xyz'] = pred_xyz
-        # ori_info['pred_vertices'] = pred_vertices
-        ori_info['xyz'] = gt_joints
-        # ori_info['vertices'] = gt_vertices
+    # for pred_uv, pred_xyz, gt_joints, ori_info in zip(pred_uv_list, xyz_pred_list, xyz_gt_list, dataset.all_info):
+    #     ori_info['pred_uv'] = pred_uv
+    #     ori_info['pred_xyz'] = pred_xyz
+    #     # ori_info['pred_vertices'] = pred_vertices
+    #     ori_info['xyz'] = gt_joints
+    #     # ori_info['vertices'] = gt_vertices
 
     eval_xyz, eval_xyz_aligned = EvalUtil(), EvalUtil()
     # eval_mesh_err, eval_mesh_err_aligned = EvalUtil(num_kp=778), EvalUtil(num_kp=778)
@@ -344,10 +346,14 @@ def main(epoch, tta=False, postfix=""):
     xyz_mean3d, _, xyz_auc3d, pck_xyz, thresh_xyz = eval_xyz.get_measures(0.0, 0.05, 100)
     print('Evaluation 3D KP results:')
     print('auc=%.3f, mean_kp3d_avg=%.2f cm' % (xyz_auc3d, xyz_mean3d * 100.0))
+    print('pck_xyz:', pck_xyz)
+    print('thresh_xyz:', thresh_xyz)
 
     xyz_al_mean3d, _, xyz_al_auc3d, pck_xyz_al, thresh_xyz_al = eval_xyz_aligned.get_measures(0.0, 0.05, 100)
     print('Evaluation 3D KP ALIGNED results:')
     print('auc=%.3f, mean_kp3d_avg=%.2f cm\n' % (xyz_al_auc3d, xyz_al_mean3d * 100.0))
+    print('pck_xyz_al:', pck_xyz_al)
+    print('thresh_xyz_al:', thresh_xyz_al)
 
     # if shape_is_mano:
     #     mesh_mean3d, _, mesh_auc3d, pck_mesh, thresh_mesh = eval_mesh_err.get_measures(0.0, 0.05, 100)

@@ -1,5 +1,5 @@
 _CONFIG = dict(
-    NAME="HandNet_joints_head_w_depth",
+    NAME="HandNet_joints_normal_loss_relative_coor",
     TAG="fastvit_ma36 deconv4 one conv k44",
     MODEL=dict(
         NAME="HandNet_JointsHead",
@@ -40,10 +40,12 @@ _CONFIG = dict(
             mlp_dims = [128, 64, 3],
             
         ),
+        TRANS_FACTOR=100,
+        SCALE_FACTOR=0.0001,
         LOSSES=dict(
             UV_LOSS_WEIGHT = 1.0,
             JOINTS_LOSS_WEIGHT = 10.0,
-            DEPTH_LOSS_WEIGHT = 1.0,
+            DEPTH_LOSS_WEIGHT = 100.0,
             VERTICES_LOSS_WEIGHT = 10.0,            
         ),
 
@@ -75,8 +77,8 @@ _CONFIG = dict(
     ),
     TRAIN=dict(
         DATALOADER=dict(
-            MINIBATCH_SIZE_PER_DIVICE=128,
-            MINIBATCH_PER_EPOCH=256,
+            MINIBATCH_SIZE_PER_DIVICE=64,
+            MINIBATCH_PER_EPOCH=400,
             NAME="train",
             NUM_WORKERS=4,
         ),

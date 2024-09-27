@@ -224,7 +224,10 @@ def l1_loss(pred, gt, weight=None, valid=None):
     if weight is not None:
         loss = loss * weight
     loss = loss.mean(-1)
+    # print("loss shape", loss.shape)
+    
     if valid is not None:
+        # print("valid shape", valid.shape)
         loss = loss * valid
     return loss.mean()    
 

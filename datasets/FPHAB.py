@@ -8,6 +8,7 @@ from collections import defaultdict
 from tqdm import tqdm
 from cfg_jointshead import _CONFIG
 from typing import List, Dict
+from torch.utils.data import Dataset, DataLoader, RandomSampler
 from transforms import GetRandomScaleRotation, MeshAffine, RandomHorizontalFlip, \
             get_points_center_scale, RandomChannelNoise, BBoxCenterJitter, MeshPerspectiveTransform
 from kp_preprocess import get_2d3d_perspective_transform
@@ -18,10 +19,10 @@ NORMALIZE_3D_GT = DATA_CFG['NORMALIZE_3D_GT']
 AUG_CFG: Dict = DATA_CFG["AUG"]
 ROOT_INDEX = DATA_CFG['ROOT_INDEX']
 class SimplifiedFHBHandsDataset(Dataset):
-    def __init__(self, dataset_folder, split='train', input_res=(1920, 1080)):
+    def __init__(self, dataset_folder, split='train', input_res=(1920, 1080), scale_enlarge=1.25):
         self.input_res = input_res
         self.split = split
-
+        self.scale_enlarge = scale_enlarge
         # 摄像机外参和内参
         self.cam_extr = np.array([[0.999988496304, -0.00468848412856, 0.000982563360594, 25.7],
                                   [0.00469115935266, 0.999985218048, -0.00273845880292, 1.22],
@@ -163,16 +164,16 @@ class SimplifiedFHBHandsDataset(Dataset):
 
     def get_joints3d(self, idx):
         """获取3D关节坐标"""
-        return self.joints3d[idx] / 1000  # 转换为米单位
+        return self.joints3d[idx] / 1000
 
     def get_joints2d(self, idx):
         """获取2D关节坐标"""
-        return self.joints2d[idx] * self.reduce_factor
+        return self.joints2d[idx]
 
     def get_joints25d(self, idx):
         """获取2.5D 关节坐标"""
         joints2d = self.get_joints2d(idx)
-        joints3d = self.get_joints3d(idx)
+        joints3d = self.get_joints3d(idx) / 1000
 
         # 将 2D 坐标的 (x, y) 和 3D 的深度信息 (z) 组合起来，形成 2.5D 坐标
         joints25d = np.concatenate([joints2d, joints3d[:, 2:]], axis=1)
@@ -180,27 +181,38 @@ class SimplifiedFHBHandsDataset(Dataset):
 
     def __getitem__(self, idx):
         """获取单个样本，包括图像和对应的关节坐标"""
+        # print("idx", idx)
         img = self.get_image(idx)
         joints3d = self.get_joints3d(idx)
         joints2d = self.get_joints2d(idx)
         joints25d = self.get_joints25d(idx)
+        
 
         K = self.cam_intr
         
+        # get width and height of img
         h, w = img.shape[:2]
         uv_norm = joints2d.copy()
         uv_norm[:, 0] /= w
-        uv_norm[:, 1] /= h
-        
+        uv_norm[:, 1] /= h      
+              
         coor_valid = (uv_norm > 0).astype(np.float32) * (uv_norm < 1).astype(np.float32)
         coor_valid = coor_valid[:, 0] * coor_valid[:, 1]
         
         valid_points = [joints2d[i] for i in range(len(joints2d)) if coor_valid[i] == 1]
         
         points = np.array(valid_points)
+        
+        if points.size <= 9:
+            
+            # print(f"No valid points in sample {idx}, using other sample")
+            return self.__getitem__(np.random.randint(0, len(self.image_names)))
+
+        
+        points = np.array(valid_points)
         min_coord = points.min(axis=0)
         max_coord = points.max(axis=0)
-        center = (max_coord + min_coord) / 2
+        center = (max_coord + min_coord)/2
         scale = max_coord - min_coord
         
                 
@@ -219,11 +231,15 @@ class SimplifiedFHBHandsDataset(Dataset):
             results = self.get_random_scale_rotation(results)
             results = self.mesh_perspective_trans(results)
             
-            use_relative = False
+            if np.isnan(results['K']).any():
+                print("K is nan")
+                return self.__getitem__(np.random.randint(0, len(self.image_names)))
+            
+            use_relative = True
             root_point = results['keypoints3d'][self.root_index].copy()
             if use_relative:                
                 results['keypoints3d'] = results['keypoints3d'] - root_point[None, :]
-                results['vertices'] = results['vertices'] - root_point[None, :]
+                # results['vertices'] = results['vertices'] - root_point[None, :]
             hand_img_len = img.shape[0]
             root_depth = root_point[2]
             
@@ -266,17 +282,48 @@ class SimplifiedFHBHandsDataset(Dataset):
                 "uv_valid": trans_coord_valid,
                 "gamma": gamma,
                 "xyz_valid": xyz_valid,
+                "cam_intr": results["K"],
             }
 
           
         elif self.split == "test":
-            data = results
+            ori_xyz = results['keypoints3d'].copy()
+            scale = scale * self.scale_enlarge
+            
+            new_K, trans_matrix_2d, trans_matrix_3d = get_2d3d_perspective_transform(K, center, scale, 0, IMAGE_SHAPE[0])
+            img_processed = cv2.warpPerspective(results['img'], trans_matrix_2d, IMAGE_SHAPE)
+            new_uv = np.concatenate([results['keypoints2d'], np.ones((results['keypoints2d'].shape[0], 1))], axis=1)
+            new_uv = (trans_matrix_2d @ new_uv.T).T
+            new_uv = new_uv[:, :2] / new_uv[:, 2:]
+            new_xyz = (trans_matrix_3d @ results['keypoints3d'].T).T
+            
+            img_processed = np.transpose(img_processed, (2, 0, 1))
+            joints25d = np.concatenate([new_uv, new_xyz[:, 2:]], axis=1)
+            
+            data = {
+                "img": np.ascontiguousarray(img_processed),
+                "trans_matrix_2d": trans_matrix_2d,
+                "trans_matrix_3d": trans_matrix_3d,
+                "uv": new_uv,
+                "K": new_K,
+                "xyz": new_xyz,
+                "joints25d": joints25d,
+                "ori_xyz": ori_xyz, 
+                "scale": IMAGE_SHAPE[0],
+                   
+            }
+            
         
         return data
     
     def __len__(self):
         return len(self.image_names)
-    
+
+def build_train_loader(batch_size, num_workers=4):
+    dataset = SimplifiedFHBHandsDataset(dataset_folder="/media/mldadmin/home/s123mdg31_07/Datasets/FPHAB", split='train')
+    sampler = RandomSampler(dataset, replacement=True)
+    dataloader = (DataLoader(dataset, batch_size=batch_size, sampler=sampler, num_workers=num_workers))
+    return iter(dataloader)
 
 if __name__ == "__main__":
     dataset_root = "/media/mldadmin/home/s123mdg31_07/Datasets/FPHAB"

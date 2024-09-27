@@ -18,7 +18,8 @@ warnings.filterwarnings("ignore", category=ResourceWarning)
 
 from hand_net import HandNet
 from cfg_jointshead import _CONFIG
-from dataset import build_train_loader
+# from dataset import build_train_loader
+from datasets import build_train_loader
 from utils import GPUMemoryMonitor, get_log_model_dir
 
 import torch.multiprocessing
@@ -173,7 +174,8 @@ class Trainer:
 
 
     def before_epoch(self):
-        self.train_loader = build_train_loader(self.cfg["TRAIN"]["DATALOADER"]["MINIBATCH_SIZE_PER_DIVICE"])
+        self.train_loader = build_train_loader(self.cfg["TRAIN"]["DATALOADER"]["MINIBATCH_SIZE_PER_DIVICE"],
+                                               self.cfg["TRAIN"]["DATALOADER"]["NUM_WORKERS"])
         self.model.train()
 
     def after_epoch(self):
@@ -204,6 +206,14 @@ class Trainer:
 
         for k in batch_data:
             batch_data[k] = Tensor(batch_data[k]).cuda(self.local_rank).float()
+            
+        # check input data if NaN exsits
+        if torch.isnan(image).any() or torch.isinf(image).any():
+            logger.error("NaN or Inf detected in input image")
+        for k, v in batch_data.items():
+            if torch.isnan(v).any() or torch.isinf(v).any():
+                logger.error(f"NaN or Inf detected in batch_data[{k}]")
+                return  # 或者采取其他处理措施
 
         tdata = time.time() - iter_start_time
         

@@ -1,6 +1,6 @@
 import numpy as np
 import cv2
-
+from loguru import logger
 
 def get_points_center_scale(points):
     # points must be NxC
@@ -132,11 +132,15 @@ def cal_perspective_mat(center, scale, res, K, new_K=None):
 
     rot_xyz = (rot_mat@xyz_array.T).T
 
+    
     if new_K is None:
         # 如果没有提供K，这里直接先预先投影一次，得到投影后的点，然后计算其外接框，得到scale
 
         temp_uv = projectPoints(rot_xyz, K)
         scale = (temp_uv.max(axis=0) - temp_uv.min(axis=0)).max()
+        # if scale == 0:
+        #     logger.warning("scale is 0, use 0.05 instead")
+        #     scale = res * 0.05  # 使用图像分辨率的5%作为最小scale
         focal_scale = res / scale 
         fx = K[0][0]
         fy = K[1][1]
@@ -170,7 +174,76 @@ def trans2d_perspective(uv, M):
     trans_coord = trans_coord / trans_coord[:, 2:3]
     return trans_coord[:, :2]
 
+def check_parameters(center, scale, rot, img_size, margin=0.8):
+    """
+    检测 center, scale 和 rot 的合法性，确保计算得到的 bbox 大致在图像范围内（允许略微超出）
 
+    Args:
+        center (list or tuple): (x, y) crop 中心
+        scale (list or tuple): [scale_x, scale_y]
+        rot (float): 旋转角度（度）
+        img_size (tuple): 原始图像大小 (h, w)
+        margin (float): 允许的边界超出比例
+
+    Returns:
+        center (np.array): 修正后的中心点
+        scale (np.array): 修正后的 scale
+        rot_rad (float): 以弧度为单位的旋转角度
+        is_valid (bool): 参数是否合法
+    """
+    h, w = img_size
+    center = np.array(center, dtype=np.float32)
+    scale = np.array(scale, dtype=np.float32)
+
+    # 确保 scale 为正
+    if np.any(scale <= 0):
+        print("Error: Scale dimensions must be positive and non-zero.")
+        return center, scale, 0.0, False
+
+    # 将旋转角度从度转换为弧度
+    rot_rad = np.deg2rad(rot)
+
+    # 确保 rot 在 -pi 到 pi 之间
+    rot_rad = rot_rad % (2 * np.pi)
+    if rot_rad > np.pi:
+        rot_rad -= 2 * np.pi
+
+    # 计算旋转后的 bbox 的四个角点
+    half_scale = scale / 2
+    corners = np.array([
+        [-half_scale[0], -half_scale[1]],
+        [-half_scale[0],  half_scale[1]],
+        [ half_scale[0], -half_scale[1]],
+        [ half_scale[0],  half_scale[1]],
+    ])
+
+    # 旋转矩阵
+    rot_matrix = np.array([
+        [np.cos(rot_rad), -np.sin(rot_rad)],
+        [np.sin(rot_rad),  np.cos(rot_rad)],
+    ], dtype=np.float32)
+
+    rotated_corners = corners @ rot_matrix.T
+    rotated_bbox_min = rotated_corners.min(axis=0) + center
+    rotated_bbox_max = rotated_corners.max(axis=0) + center
+
+    # 允许的边界超出
+    margin_w = w * margin
+    margin_h = h * margin
+
+    # 检查是否有角点超出允许的范围
+    if (rotated_bbox_min[0] < -margin_w or
+        rotated_bbox_min[1] < -margin_h or
+        rotated_bbox_max[0] > w + margin_w or
+        rotated_bbox_max[1] > h + margin_h):
+        print("Warning: Center and scale result in bbox exceeding image boundaries with allowed margin.")
+        logger.waring("Warning: Center and scale result in bbox exceeding image boundaries with allowed margin.")
+        return center, scale, rot_rad, False
+
+    return center, scale, rot_rad, True
+
+    
+    
 def get_2d3d_perspective_transform(K, center, scale, rot=0, res=224):
     """根据相机参数以及crop的中心点, crop大小, 以及旋转角度, 得到新相机视角下新相机参数K, 以及对应的2d, 3d透视变换矩阵
 
